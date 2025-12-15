@@ -86,16 +86,37 @@
     <button class="btn secondary" onclick="signIn()">🔐 Anmelden</button>
     <button class="btn danger" onclick="signOut()">🚪 Abmelden</button>
     <button class="btn" onclick="loadFromCloud()">⟳ Aus Cloud laden</button>
+    <button class="btn secondary" onclick="openSupport()">🆘 IT-Support</button>
   </div>
   <div id="authStatus" class="status warn">Nicht angemeldet.</div>
   <div class="muted">
     Speicherort: <span id="cloudLocation">(wird nach Anmeldung aufgelöst)</span><br/>
     Datei: <b>t2c-wartung-log.json</b>
   </div>
+
 </div>
 
+<!-- IT-Support Modal -->
+<div id="supportBackdrop" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.45); z-index:9999;" onclick="closeSupport(true)"></div>
+<div id="supportModal" style="display:none; position:fixed; left:50%; top:50%; transform:translate(-50%,-50%); width:min(520px, 92vw); background:#fff; border:1px solid #dde; border-radius:14px; z-index:10000; box-shadow:0 10px 30px rgba(0,0,0,.25);">
+  <div style="padding:14px 16px; border-bottom:1px solid #eef; font-weight:800; display:flex; justify-content:space-between; align-items:center;">
+    <span>🆘 IT-Support anfordern</span>
+    <button class="btn danger" style="width:auto; margin-top:0; padding:8px 10px;" onclick="closeSupport(false)">✕</button>
+  </div>
+  <div style="padding:14px 16px;">
+    <div class="muted" style="margin-bottom:8px;">Beschreibe kurz das Problem. Die App sendet eine Support-Meldung inkl. Drucker/Fehler/Seriennummer an die IT.</div>
+    <label for="supportText" style="margin-top:0;">Deine Nachricht:</label>
+    <textarea id="supportText" rows="5" placeholder="Was ist passiert? (z. B. Fehlermeldung, Bild/Screenshot vorhanden, was wurde bereits probiert?)"></textarea>
+    <div class="muted" style="margin-top:8px;">Tipp: Wenn du nicht angemeldet bist, öffnet sich alternativ eine vorbereitete E-Mail.</div>
+    <div class="top-actions" style="margin-top:10px;">
+      <button class="btn secondary" onclick="sendSupport()">📩 Support senden</button>
+      <button class="btn" onclick="closeSupport(false)">Abbrechen</button>
+    </div>
+    <div id="supportStatus" class="status warn" style="display:none; margin-top:10px;">—</div>
+  </div>
+</div>
 
-<details class="dash-details" id="dashDetails" open>
+<details class="dash-details id="dashDetails" open>
   <summary>📊 Dashboard anzeigen/ausblenden</summary>
   <div class="dashboard" id="advancedDashboard">
   <div><strong>📊 Dashboard (aus allen Cloud-Einträgen):</strong></div>
@@ -303,7 +324,12 @@ const APP_SETTINGS = {
   // Name der Logdatei im Ordner:
   logFileName: "t2c-wartung-log.json",
   // Minimale Scopes (Delegated) für Graph:
-  scopes: ["User.Read", "Files.ReadWrite.All"]
+  scopes: ["User.Read", "Files.ReadWrite.All"],
+  // IT-Support
+  supportEmail: "merten.thiemann@petri-feinkost.de",
+  // OPTIONAL: Power Automate / Logic App HTTP Endpoint (wenn gesetzt, wird Support automatisch per Mail gepusht)
+  // Beispiel: "https://prod-xx.westeurope.logic.azure.com:443/workflows/...."
+  supportFlowUrl: ""
 };
 
 // =============================
@@ -345,6 +371,124 @@ function setStatus(kind, text) {
   el.classList.remove("ok", "warn", "err");
   el.classList.add(kind);
   el.textContent = text;
+}
+
+// =============================
+// IT-SUPPORT (Push per Mail via Flow/Logic App, oder Fallback mailto)
+// =============================
+function openSupport(){
+  document.getElementById("supportBackdrop").style.display = "block";
+  document.getElementById("supportModal").style.display = "block";
+  document.getElementById("supportStatus").style.display = "none";
+  // Pre-fill with some context
+  const drucker = document.getElementById("drucker")?.value || "";
+  const fehler  = document.getElementById("fehler")?.value || "";
+  const sn      = document.getElementById("seriennummer")?.value || "";
+  const aktion  = document.getElementById("aktion")?.value || "";
+  const hint = `Drucker: ${drucker}\nAktion: ${aktion}\nFehler: ${fehler}\nSeriennummer: ${sn}\n\nBeschreibung: `;
+  const ta = document.getElementById("supportText");
+  if (ta && !ta.value) ta.value = hint;
+  setTimeout(()=>ta?.focus(), 0);
+}
+
+function closeSupport(fromBackdrop){
+  // if click on backdrop only, close as well
+  document.getElementById("supportBackdrop").style.display = "none";
+  document.getElementById("supportModal").style.display = "none";
+  if (!fromBackdrop) return;
+}
+
+function showSupportStatus(kind, text){
+  const el = document.getElementById("supportStatus");
+  el.classList.remove("ok","warn","err");
+  el.classList.add(kind);
+  el.textContent = text;
+  el.style.display = "block";
+}
+
+function buildSupportPayload(){
+  const now = new Date();
+  const account = (msalInstance?.getActiveAccount?.() || activeAccount);
+  const user = account?.username || "";
+  return {
+    app: "t2c-wartung",
+    timeLocal: now.toLocaleString("de-DE"),
+    timeIso: now.toISOString(),
+    user,
+    drucker: document.getElementById("drucker")?.value || "",
+    aktion:  document.getElementById("aktion")?.value || "",
+    fehler:  document.getElementById("fehler")?.value || "",
+    seriennummer: document.getElementById("seriennummer")?.value || "",
+    leistung: document.getElementById("leistung")?.value || "",
+    etiketten: document.getElementById("etiketten")?.value || "",
+    bemerkung: document.getElementById("bemerkung")?.value || "",
+    message: (document.getElementById("supportText")?.value || "").trim(),
+    pageUrl: location.href
+  };
+}
+
+function fallbackMailto(payload){
+  const subject = `T2-C IT-Support: ${payload.drucker || "—"} – ${payload.fehler || "Problem"} (${payload.timeLocal})`;
+  const body =
+`Hallo IT,
+
+ich benötige Unterstützung.
+
+Drucker: ${payload.drucker}
+Aktion: ${payload.aktion}
+Fehler: ${payload.fehler}
+Seriennummer: ${payload.seriennummer}
+Leistung: ${payload.leistung}
+Etiketten: ${payload.etiketten}
+Gemeldet von: ${payload.user}
+Zeitpunkt: ${payload.timeLocal}
+
+Nachricht:
+${payload.message}
+
+App: ${payload.pageUrl}
+`;
+  const mailto = `mailto:${APP_SETTINGS.supportEmail}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  window.location.href = mailto;
+}
+
+async function sendSupport(){
+  const payload = buildSupportPayload();
+  if (!payload.message){
+    showSupportStatus("warn", "Bitte eine kurze Beschreibung eingeben.");
+    return;
+  }
+
+  // If a Flow/LogicApp endpoint is configured, send automatically (push)
+  const url = (APP_SETTINGS.supportFlowUrl || "").trim();
+  if (url){
+    try{
+      showSupportStatus("ok", "Sende Support-Anfrage…");
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (!resp.ok){
+        const txt = await resp.text();
+        throw new Error(`HTTP ${resp.status}: ${txt}`);
+      }
+      showSupportStatus("ok", "✅ Support-Anfrage gesendet. Du bekommst bei Bedarf Rückmeldung.");
+      // Optional auto-close after a moment
+      setTimeout(()=>closeSupport(false), 900);
+      return;
+    }catch(e){
+      console.error(e);
+      showSupportStatus("err", "Automatisches Senden fehlgeschlagen – öffne stattdessen eine E-Mail.");
+      // fallback to mailto
+      fallbackMailto(payload);
+      return;
+    }
+  }
+
+  // No endpoint set → fallback to mailto (user clicks send in mail client)
+  showSupportStatus("warn", "Kein Support-Endpunkt hinterlegt – es öffnet sich eine vorbereitete E-Mail.");
+  fallbackMailto(payload);
 }
 
 async function signIn() {
@@ -1075,6 +1219,7 @@ function updateChart() {
     const aktionEl = document.getElementById("aktion");
     if (aktionEl) aktionEl.addEventListener("change", updateColorCheckboxEnabled);
     updateColorCheckboxEnabled();
+    document.addEventListener("keydown", (e)=>{ if(e.key==="Escape") closeSupport(false); });
     await initMsal();
     const accounts = msalInstance.getAllAccounts();
     if (accounts.length > 0) {
