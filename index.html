@@ -215,6 +215,7 @@
   <label><input type="checkbox" value="Lila" class="farbe"> Lila</label>
   <label><input type="checkbox" value="Schwarz" class="farbe"> Schwarz</label>
 </div>
+<div id="farbenHint" class="muted" style="margin-top:6px; display:none;">Farbauswahl ist nur bei Aktion „Farbwechsel“ aktiv.</div>
 
 <label for="fehler">Fehler (optional):</label>
 <select id="fehler">
@@ -624,6 +625,19 @@ function collectEntryFromForm() {
     // machine fields:
     createdAt: new Date().toISOString()
   };
+}
+
+function updateColorCheckboxEnabled() {
+  const aktion = document.getElementById("aktion")?.value || "";
+  const enable = (aktion === "Farbwechsel");
+  document.querySelectorAll(".farbe").forEach(cb => {
+    cb.disabled = !enable;
+    if (!enable) cb.checked = false;
+  });
+  const hint = document.getElementById("farbenHint");
+  if (hint) {
+    hint.style.display = enable ? "none" : "block";
+  }
 }
 
 function resetForm() {
@@ -1047,6 +1061,10 @@ function updateChart() {
 // Auto-detect existing session
 (async function boot() {
   try {
+    // UX: Farben nur bei Aktion „Farbwechsel“
+    const aktionEl = document.getElementById("aktion");
+    if (aktionEl) aktionEl.addEventListener("change", updateColorCheckboxEnabled);
+    updateColorCheckboxEnabled();
     await initMsal();
     const accounts = msalInstance.getAllAccounts();
     if (accounts.length > 0) {
