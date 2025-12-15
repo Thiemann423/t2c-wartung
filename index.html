@@ -145,6 +145,12 @@
     <div style="overflow:auto; max-height: 360px;">
       <table class="matrix-table" id="wearMatrix"></table>
     </div>
+<div class="matrix-box">
+      <div class="muted">📏 Verschleiß pro 100.000 Etiketten (nur wenn eine Zahl vorhanden ist):</div>
+      <table class="matrix-table" id="wearPer100k"></table>
+      <div class="muted" style="margin-top:6px;">Hinweis: Die Zahl wird aus „Etikettenzähler“ (oder ersatzweise aus „Leistung“, falls dort eine Zahl steht) gelesen.</div>
+    </div>
+
   </div>
 
 <div style="margin-top:14px; font-weight:bold;">🎨 Farb-Zähler (wie oft eine Farbe angeklickt wurde):</div>
@@ -164,14 +170,16 @@
       <option value="T2-C Drucker 2">T2-C Drucker 2</option>
     </select>
   </div>
-  <div class="half">
-    <label for="personal">Personal:</label>
-    <select id="personal">
-      <option value="Mitarbeiter A">Mitarbeiter A</option>
-      <option value="Mitarbeiter B">Mitarbeiter B</option>
-      <option value="Mitarbeiter C">Mitarbeiter C</option>
-    </select>
-  </div>
+<div class="half">
+  <label for="personal">Personal:</label>
+  <select id="personal">
+    <option value="">Bitte auswählen…</option>
+    <option value="Gaby Zellober">Gaby Zellober</option>
+    <option value="Ramona Fischer-Brandt">Ramona Fischer-Brandt</option>
+    <option value="Thorsten Andrè">Thorsten Andrè</option>
+  </select>
+</div>
+
 </div>
 
 <label for="aktion">Was wurde gemacht?</label>
@@ -186,6 +194,11 @@
 
 <label for="leistung">Leistung beim Wechsel (z. B. Aufträge):</label>
 <input type="text" id="leistung" placeholder="z. B. 120000 Etiketten" />
+
+<label for="etiketten">Etikettenzähler (optional, nur Zahl für Auswertung):</label>
+<input type="number" id="etiketten" placeholder="z. B. 120000" />
+<div class="muted">Tipp: Wenn hier eine Zahl steht, kann die App „Verschleiß pro 100.000 Etiketten“ berechnen.</div>
+
 
 <label>Welche Farbe(n)?</label>
 <div>
@@ -583,13 +596,17 @@ function collectEntryFromForm() {
   const seriennummer = document.getElementById("seriennummer").value;
   const aktion = document.getElementById("aktion").value;
   const leistung = document.getElementById("leistung").value;
+  const etikettenRaw = (document.getElementById("etiketten")||{value:""}).value;
   const fehler = document.getElementById("fehler").value;
   const bemerkung = document.getElementById("bemerkung").value;
   const farbenListe = [...document.querySelectorAll(".farbe:checked")].map(cb => cb.value);
   const farben = farbenListe.join(", ");
 
+  const etikettenCount = parseEtikettenCount(etikettenRaw || leistung);
+
   return {
     datum, zeit, drucker, aktion, seriennummer, farben, leistung, fehler, personal, bemerkung,
+    etikettenCount,
     // machine fields:
     createdAt: new Date().toISOString()
   };
@@ -599,6 +616,7 @@ function resetForm() {
   document.getElementById("seriennummer").value = "";
   document.getElementById("leistung").value = "";
   document.getElementById("bemerkung").value = "";
+  const et = document.getElementById("etiketten"); if (et) et.value = "";
   document.querySelectorAll(".farbe").forEach(cb => cb.checked = false);
   document.getElementById("fehler").value = "";
 }
@@ -774,6 +792,7 @@ function updateAdvancedDashboard(entries){
   });
 
   renderWearMatrix(entries);
+  renderWearPer100k(entries);
 }
 
 function renderWearMatrix(entries){
@@ -824,6 +843,82 @@ function renderWearMatrix(entries){
   html += `<td><b>${grandTotal}</b></td></tr>`;
   html += "</tbody>";
 
+  table.innerHTML = html;
+}
+
+function parseEtikettenCount(value){
+  if (value === null || value === undefined) return null;
+  let s = String(value).trim();
+  if (!s) return null;
+
+  // normalize
+  s = s.toLowerCase().replace(/etiketten|labels|st\.|stk\.|stücke|pcs/gi, " ").trim();
+
+  // Match: number with separators + optional k/m suffix
+  const m = s.match(/(\d[\d\s\.,]*)(?:\s*([km]))?/i);
+  if (!m) return null;
+
+  let num = m[1].replace(/\s+/g, "");
+  // remove thousands separators
+  num = num.replace(/\./g, "").replace(/,/g, "");
+  if (!/^\d+$/.test(num)) return null;
+
+  let n = parseInt(num, 10);
+  const suf = (m[2] || "").toLowerCase();
+  if (suf === "k") n = n * 1000;
+  if (suf === "m") n = n * 1000000;
+
+  if (!isFinite(n) || n <= 0) return null;
+  return n;
+}
+
+function renderWearPer100k(entries){
+  const table = document.getElementById("wearPer100k");
+  if (!table) return;
+
+  const actions = ["Farbwechsel", "Wiper gewechselt", "Druckkopf gewechselt"];
+  const printersSet = new Set(entries.map(e => (e.drucker || "Unbekannt").trim()));
+  const printers = Array.from(printersSet).sort((a,b)=>a.localeCompare(b, "de"));
+
+  // Sum labels per printer + counts per action
+  const labelsByPrinter = {};
+  const counts = {}; // counts[printer][action]
+  for (const p of printers){ labelsByPrinter[p] = 0; counts[p] = {}; }
+
+  for (const e of entries){
+    const p = (e.drucker || "Unbekannt").trim();
+    const a = (e.aktion || "Unbekannt").trim();
+    if (!counts[p]) counts[p] = {};
+    counts[p][a] = (counts[p][a] || 0) + 1;
+
+    const lbl = (typeof e.etikettenCount === "number" && e.etikettenCount > 0) ? e.etikettenCount : parseEtikettenCount(e.leistung);
+    if (lbl && isFinite(lbl)) labelsByPrinter[p] = (labelsByPrinter[p] || 0) + lbl;
+  }
+
+  // Header
+  let html = "<thead><tr><th>Drucker</th><th>Etiketten ges.</th>";
+  for (const a of actions) html += `<th>${a} /100k</th>`;
+  html += "<th>Wartungen ges. /100k</th></tr></thead><tbody>";
+
+  for (const p of printers){
+    const totalLabels = labelsByPrinter[p] || 0;
+    const denom = totalLabels / 100000;
+    html += `<tr><td class="left">${p}</td><td>${totalLabels ? totalLabels.toLocaleString("de-DE") : "—"}</td>`;
+
+    let totalMaint = 0;
+    for (const a of actions) totalMaint += (counts[p][a] || 0);
+
+    for (const a of actions){
+      const c = counts[p][a] || 0;
+      const rate = (denom > 0) ? (c / denom) : null;
+      html += `<td>${rate === null ? "—" : rate.toFixed(2)}</td>`;
+    }
+
+    const totalRate = (denom > 0) ? (totalMaint / denom) : null;
+    html += `<td><b>${totalRate === null ? "—" : totalRate.toFixed(2)}</b></td></tr>`;
+  }
+
+  html += "</tbody>";
   table.innerHTML = html;
 }
 
