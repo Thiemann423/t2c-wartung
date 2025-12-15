@@ -152,6 +152,31 @@
   <canvas id="colorChart" width="600" height="300"></canvas>
 </div>
 
+
+<script>
+/* Ensure MSAL is available (fallback to Microsoft CDN if jsDelivr is blocked) */
+(function(){
+  function loadScript(src){
+    return new Promise(function(resolve,reject){
+      var s=document.createElement('script');
+      s.src=src;
+      s.onload=resolve;
+      s.onerror=reject;
+      document.head.appendChild(s);
+    });
+  }
+  window.__ensureMsal = async function(){
+    if (window.msal && window.msal.PublicClientApplication) return;
+    try{
+      // Fallback (Microsoft official CDN). Version path is stable for v2; works for our use too.
+      await loadScript("https://alcdn.msauth.net/browser/2.38.0/js/msal-browser.min.js");
+    }catch(e){
+      console.error("Failed to load MSAL from fallback CDN", e);
+    }
+  };
+})();
+</script>
+
 <script>
 // =============================
 // 0) APP SETTINGS (Azure + Ordner)
@@ -183,7 +208,22 @@ const msalConfig = {
   }
 };
 
-const msalInstance = new msal.PublicClientApplication(msalConfig);
+let msalInstance = null;
+
+async function initMsal(){
+  if (window.__ensureMsal) { await window.__ensureMsal(); }
+  if (!window.msal || !window.msal.PublicClientApplication) {
+    throw new Error("MSAL library not loaded (msal undefined).");
+  }
+  if (!msalInstance) {
+    msalInstance = new msal.PublicClientApplication(msalConfig);
+    if (typeof msalInstance.initialize === "function") {
+      await initMsal();
+    }
+  }
+  return msalInstance;
+}
+
 
 let activeAccount = null;
 
@@ -196,6 +236,7 @@ function setStatus(kind, text) {
 
 async function signIn() {
   try {
+    await initMsal();
     const result = await msalInstance.loginPopup({ scopes: APP_SETTINGS.scopes });
     activeAccount = result.account;
     msalInstance.setActiveAccount(activeAccount);
@@ -210,6 +251,7 @@ async function signIn() {
 
 async function signOut() {
   try {
+    await initMsal();
     const account = msalInstance.getActiveAccount();
     if (!account) {
       setStatus("warn", "Nicht angemeldet.");
@@ -226,6 +268,7 @@ async function signOut() {
 }
 
 async function getAccessToken() {
+  await initMsal();
   const account = msalInstance.getActiveAccount() || activeAccount;
   if (!account) throw new Error("Not signed in");
   const result = await msalInstance.acquireTokenSilent({ account, scopes: APP_SETTINGS.scopes });
@@ -428,6 +471,7 @@ function updateDashboard() {
 
 async function loadFromCloud() {
   try {
+    await initMsal();
     await ensureCloudReady();
     setStatus("ok", `Angemeldet als: ${(msalInstance.getActiveAccount()||{}).username} – lade Daten...`);
     const log = await readLog();
@@ -562,7 +606,7 @@ function updateChart() {
 // Auto-detect existing session
 (async function boot() {
   try {
-    await msalInstance.initialize();
+    await initMsal();
     const accounts = msalInstance.getAllAccounts();
     if (accounts.length > 0) {
       activeAccount = accounts[0];
@@ -582,4 +626,3 @@ function updateChart() {
 
 </body>
 </html>
-
