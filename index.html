@@ -123,6 +123,16 @@
     </div>
   </div>
 
+  <div class="row" style="margin-top:10px;">
+    <div class="half">
+      <label for="dashPrinterFilter">Dashboard-Filter: Drucker</label>
+      <select id="dashPrinterFilter" onchange="updateColorPerPrinterChart()">
+        <option value="__ALL__">Alle Drucker</option>
+      </select>
+      <div class="muted">Diese Auswahl beeinflusst die Grafik „Farben pro Drucker“.</div>
+    </div>
+  </div>
+
   <div class="dash-grid">
     <div class="chart-card">
       <h3>Wartungen pro Gerät</h3>
@@ -170,16 +180,14 @@
       <option value="T2-C Drucker 2">T2-C Drucker 2</option>
     </select>
   </div>
-<div class="half">
-  <label for="personal">Personal:</label>
-  <select id="personal">
-    <option value="">Bitte auswählen…</option>
-    <option value="Gaby Zellober">Gaby Zellober</option>
-    <option value="Ramona Fischer-Brandt">Ramona Fischer-Brandt</option>
-    <option value="Thorsten Andrè">Thorsten Andrè</option>
-  </select>
-</div>
-
+  <div class="half">
+    <label for="personal">Personal:</label>
+    <select id="personal">
+      <option value="Mitarbeiter A">Mitarbeiter A</option>
+      <option value="Mitarbeiter B">Mitarbeiter B</option>
+      <option value="Mitarbeiter C">Mitarbeiter C</option>
+    </select>
+  </div>
 </div>
 
 <label for="aktion">Was wurde gemacht?</label>
@@ -248,10 +256,13 @@
   <tbody></tbody>
 </table>
 
-<div class="chart-box">
-  <h3>📈 Farbwechsel-Statistik</h3>
-  <canvas id="colorChart" width="600" height="300"></canvas>
-</div>
+<details class="dash-details" id="colorStatsDetails">
+  <summary>📈 Farbwechsel-Statistik anzeigen/ausblenden</summary>
+  <div class="chart-box">
+    <h3>📈 Farbwechsel-Statistik</h3>
+    <canvas id="colorChart" width="600" height="300"></canvas>
+  </div>
+</details>
 
 
 <script>
@@ -693,10 +704,72 @@ function alsPDFExportieren() {
 // =============================
 let printerChartObj = null;
 let actionChartObj = null;
+let colorPerPrinterChartObj = null;
 let monthlyChartObj = null;
+
+let __colorByPrinter = null;
+let __printersList = null;
 
 function safeDestroy(chartObj){
   try{ if(chartObj) chartObj.destroy(); }catch(e){}
+}
+
+function ensurePrinterFilterOptions(printers){
+  const sel = document.getElementById("dashPrinterFilter");
+  if (!sel) return;
+  const current = sel.value || "__ALL__";
+
+  // rebuild
+  sel.innerHTML = '<option value="__ALL__">Alle Drucker</option>';
+  for (const p of printers){
+    const opt = document.createElement("option");
+    opt.value = p;
+    opt.textContent = p;
+    sel.appendChild(opt);
+  }
+
+  // restore if possible
+  const exists = [...sel.options].some(o => o.value === current);
+  sel.value = exists ? current : "__ALL__";
+}
+
+function updateColorPerPrinterChart(){
+  const canvas = document.getElementById("colorPerPrinterChart");
+  const sel = document.getElementById("dashPrinterFilter");
+  if (!canvas || !sel || !__colorByPrinter || !__printersList) return;
+
+  const pick = sel.value || "__ALL__";
+  const colors = ["Gelb","Grün","Lila","Schwarz"];
+
+  // aggregate for selection
+  const counts = {Gelb:0, "Grün":0, Lila:0, Schwarz:0};
+  if (pick === "__ALL__"){
+    for (const p of __printersList){
+      const pc = __colorByPrinter[p] || {};
+      for (const c of colors) counts[c] += (pc[c] || 0);
+    }
+  } else {
+    const pc = __colorByPrinter[pick] || {};
+    for (const c of colors) counts[c] = (pc[c] || 0);
+  }
+
+  const ctx = canvas.getContext("2d");
+  safeDestroy(colorPerPrinterChartObj);
+  colorPerPrinterChartObj = new Chart(ctx, {
+    type: "bar",
+    data: {
+      labels: colors,
+      datasets: [{
+        label: (pick === "__ALL__") ? "Alle Drucker" : pick,
+        data: colors.map(c => counts[c])
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
+    }
+  });
 }
 
 function parseMonthLabel(entry){
@@ -729,6 +802,10 @@ function updateAdvancedDashboard(entries){
   const byPrinter = {};
   const byMonth = {};
 
+  // Farben pro Drucker (für Verbrauch/Fehlerbilder)
+  const colors = ["Gelb","Grün","Lila","Schwarz"];
+  const colorByPrinter = {}; // colorByPrinter[printer][color] = count
+
   let lastIso = null;
 
   for(const e of entries){
@@ -739,6 +816,13 @@ function updateAdvancedDashboard(entries){
 
     const month = parseMonthLabel(e);
     byMonth[month] = (byMonth[month] || 0) + 1;
+
+    // colors
+    if (!colorByPrinter[p]) colorByPrinter[p] = {Gelb:0,"Grün":0,Lila:0,Schwarz:0};
+    const fs = (e.farben || "").split(",").map(s => s.trim()).filter(Boolean);
+    for (const f of fs){
+      if (colorByPrinter[p][f] !== undefined) colorByPrinter[p][f] += 1;
+    }
 
     if (e.createdAt){
       if (!lastIso || e.createdAt > lastIso) lastIso = e.createdAt;
@@ -759,6 +843,11 @@ function updateAdvancedDashboard(entries){
   const printerLabels = Object.keys(byPrinter);
   const printerData = printerLabels.map(k => byPrinter[k]);
 
+  // Store + build filter for "Farben pro Drucker"
+  __colorByPrinter = colorByPrinter;
+  __printersList = printerLabels.slice().sort((a,b)=>a.localeCompare(b,"de"));
+  ensurePrinterFilterOptions(__printersList);
+
   const pctx = document.getElementById("printerChart").getContext("2d");
   safeDestroy(printerChartObj);
   printerChartObj = new Chart(pctx, {
@@ -778,6 +867,9 @@ function updateAdvancedDashboard(entries){
     data: { labels: actionLabels, datasets: [{ label: "Anzahl", data: actionData }] },
     options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }
   });
+
+
+  updateColorPerPrinterChart();
 
   // 3) Wartungen pro Monat (sortiert)
   const monthLabels = Object.keys(byMonth).sort();
