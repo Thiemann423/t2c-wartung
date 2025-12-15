@@ -539,8 +539,11 @@ function resetTable() {
 }
 
 function recomputeCounters(entries) {
+  // Zählt Farbwechsel NUR für Einträge mit Aktion "Farbwechsel"
   zaehler = { "Gelb": 0, "Grün": 0, "Lila": 0, "Schwarz": 0 };
   for (const e of entries) {
+    const aktion = (e.aktion || "").trim();
+    if (aktion !== "Farbwechsel") continue;
     const farben = (e.farben || "").split(",").map(s => s.trim()).filter(Boolean);
     for (const f of farben) if (zaehler[f] !== undefined) zaehler[f] += 1;
   }
@@ -817,11 +820,13 @@ function updateAdvancedDashboard(entries){
     const month = parseMonthLabel(e);
     byMonth[month] = (byMonth[month] || 0) + 1;
 
-    // colors
-    if (!colorByPrinter[p]) colorByPrinter[p] = {Gelb:0,"Grün":0,Lila:0,Schwarz:0};
-    const fs = (e.farben || "").split(",").map(s => s.trim()).filter(Boolean);
+    // colors (NUR bei Aktion "Farbwechsel")
+    if (a === "Farbwechsel") {
+      if (!colorByPrinter[p]) colorByPrinter[p] = {Gelb:0,"Grün":0,Lila:0,Schwarz:0};
+      const fs = (e.farben || "").split(",").map(s => s.trim()).filter(Boolean);
     for (const f of fs){
       if (colorByPrinter[p][f] !== undefined) colorByPrinter[p][f] += 1;
+    }
     }
 
     if (e.createdAt){
