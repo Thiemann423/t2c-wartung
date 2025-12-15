@@ -627,9 +627,19 @@ function collectEntryFromForm() {
   };
 }
 
+let __colorsEnabledPrev = null;
+
 function updateColorCheckboxEnabled() {
   const aktion = document.getElementById("aktion")?.value || "";
   const enable = (aktion === "Farbwechsel");
+  // If the user just switched to "Farbwechsel", jump focus to the first color checkbox
+  if (enable && __colorsEnabledPrev === false) {
+    setTimeout(() => {
+      const first = document.querySelector('.farbe:not([disabled])');
+      if (first) first.focus();
+    }, 0);
+  }
+  __colorsEnabledPrev = enable;
   document.querySelectorAll(".farbe").forEach(cb => {
     cb.disabled = !enable;
     if (!enable) cb.checked = false;
