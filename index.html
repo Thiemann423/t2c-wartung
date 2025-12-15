@@ -38,6 +38,40 @@
     .status.warn { border-color: #ffc107; }
     .status.err { border-color: #dc3545; }
     .top-actions { display:flex; gap:10px; flex-wrap: wrap; }
+  
+    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin-top: 10px; }
+    .kpi { background:#fff; border:1px solid #dde; border-radius: 12px; padding: 12px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+    .kpi .label { color:#556; font-size: 13px; margin-bottom: 6px; }
+    .kpi .value { font-size: 22px; font-weight: 800; color:#223; }
+    .kpi .sub { color:#667; font-size: 12px; margin-top: 4px; }
+    .dash-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-top: 14px; }
+    .chart-card { background:#fff; border:1px solid #dde; border-radius: 12px; padding: 12px; }
+    .chart-card h3 { margin: 6px 0 10px; font-size: 16px; color:#223; }
+    .chart-card canvas { width: 100% !important; height: 280px !important; }
+
+
+    /* Collapsible dashboard */
+    details.dash-details { margin-top: 18px; }
+    details.dash-details > summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 12px 14px;
+      background: #eef;
+      border-radius: 8px;
+      font-weight: bold;
+      user-select: none;
+    }
+    details.dash-details[open] > summary { margin-bottom: 10px; }
+    details.dash-details > summary::-webkit-details-marker { display:none; }
+    details.dash-details > summary::before { content: "▸ "; }
+    details.dash-details[open] > summary::before { content: "▾ "; }
+
+    .matrix-card { margin-top: 14px; padding: 12px; background: #fff; border-radius: 10px; border: 1px solid #ddd; }
+    .matrix-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    .matrix-table th, .matrix-table td { border: 1px solid #ccc; padding: 8px; text-align: center; }
+    .matrix-table th { background-color: #f2f2f2; position: sticky; top: 0; }
+    .matrix-table td.left { text-align: left; font-weight: bold; }
+
   </style>
 </head>
 <body>
@@ -60,15 +94,69 @@
   </div>
 </div>
 
-<div class="dashboard">
-  <div><strong>📊 Live-Zähler (aus allen Einträgen):</strong></div>
+
+<details class="dash-details" id="dashDetails" open>
+  <summary>📊 Dashboard anzeigen/ausblenden</summary>
+  <div class="dashboard" id="advancedDashboard">
+  <div><strong>📊 Dashboard (aus allen Cloud-Einträgen):</strong></div>
+
+  <div class="kpi-grid">
+    <div class="kpi">
+      <div class="label">Gesamt-Einträge</div>
+      <div class="value" id="kpi-total">0</div>
+      <div class="sub" id="kpi-last">Letzter Eintrag: –</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Druckkopf gewechselt</div>
+      <div class="value" id="kpi-printhead">0</div>
+      <div class="sub">Summe über alle Geräte</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Wiper gewechselt</div>
+      <div class="value" id="kpi-wiper">0</div>
+      <div class="sub">Summe über alle Geräte</div>
+    </div>
+    <div class="kpi">
+      <div class="label">Farbwechsel</div>
+      <div class="value" id="kpi-colorchange">0</div>
+      <div class="sub">Summe über alle Geräte</div>
+    </div>
+  </div>
+
+  <div class="dash-grid">
+    <div class="chart-card">
+      <h3>Wartungen pro Gerät</h3>
+      <canvas id="printerChart"></canvas>
+    </div>
+    <div class="chart-card">
+      <h3>Wartungen nach Art</h3>
+      <canvas id="actionChart"></canvas>
+    </div>
+    <div class="chart-card">
+      <h3>Wartungen pro Monat</h3>
+      <canvas id="monthlyChart"></canvas>
+    </div>
+  </div>
+
+  
+  <div class="matrix-card">
+    <h3>🧩 Verschleiß-Matrix (Gerät × Wartungsart)</h3>
+    <div class="muted">Zählt, wie oft welche Wartung an welchem Drucker durchgeführt wurde.</div>
+    <div style="overflow:auto; max-height: 360px;">
+      <table class="matrix-table" id="wearMatrix"></table>
+    </div>
+  </div>
+
+<div style="margin-top:14px; font-weight:bold;">🎨 Farb-Zähler (wie oft eine Farbe angeklickt wurde):</div>
   <div id="counter-gelb">Gelb gewechselt: 0×</div>
   <div id="counter-gruen">Grün gewechselt: 0×</div>
   <div id="counter-lila">Lila gewechselt: 0×</div>
   <div id="counter-schwarz">Schwarz gewechselt: 0×</div>
 </div>
+</details>
 
 <div class="row">
+
   <div class="half">
     <label for="drucker">Drucker wählen:</label>
     <select id="drucker">
@@ -432,6 +520,7 @@ function recomputeCounters(entries) {
     const farben = (e.farben || "").split(",").map(s => s.trim()).filter(Boolean);
     for (const f of farben) if (zaehler[f] !== undefined) zaehler[f] += 1;
   }
+  updateAdvancedDashboard(entries);
   updateDashboard();
   updateChart();
 }
@@ -579,6 +668,166 @@ function alsPDFExportieren() {
   });
   doc.save("T2C_Wartung.pdf");
 }
+
+
+// =============================
+// 4b) ADVANCED DASHBOARD (Verschleiß / Gerät / Zeit)
+// =============================
+let printerChartObj = null;
+let actionChartObj = null;
+let monthlyChartObj = null;
+
+function safeDestroy(chartObj){
+  try{ if(chartObj) chartObj.destroy(); }catch(e){}
+}
+
+function parseMonthLabel(entry){
+  // Prefer machine time, fallback to displayed date
+  const iso = entry.createdAt;
+  if (iso) {
+    const d = new Date(iso);
+    if (!isNaN(d.getTime())) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth()+1).padStart(2,"0");
+      return `${y}-${m}`;
+    }
+  }
+  // Fallback: try dd.mm.yyyy
+  const s = entry.datum || "";
+  const m = s.match(/(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+  if (m){
+    const y = m[3];
+    const mm = String(m[2]).padStart(2,"0");
+    return `${y}-${mm}`;
+  }
+  return "Unbekannt";
+}
+
+function updateAdvancedDashboard(entries){
+  const total = entries.length;
+
+  // Counts by action
+  const byAction = {};
+  const byPrinter = {};
+  const byMonth = {};
+
+  let lastIso = null;
+
+  for(const e of entries){
+    const a = (e.aktion || "Unbekannt").trim();
+    const p = (e.drucker || "Unbekannt").trim();
+    byAction[a] = (byAction[a] || 0) + 1;
+    byPrinter[p] = (byPrinter[p] || 0) + 1;
+
+    const month = parseMonthLabel(e);
+    byMonth[month] = (byMonth[month] || 0) + 1;
+
+    if (e.createdAt){
+      if (!lastIso || e.createdAt > lastIso) lastIso = e.createdAt;
+    }
+  }
+
+  // KPIs
+  document.getElementById("kpi-total").textContent = total;
+  document.getElementById("kpi-printhead").textContent = byAction["Druckkopf gewechselt"] || 0;
+  document.getElementById("kpi-wiper").textContent = byAction["Wiper gewechselt"] || 0;
+  document.getElementById("kpi-colorchange").textContent = byAction["Farbwechsel"] || 0;
+
+  const lastText = lastIso ? new Date(lastIso).toLocaleString() : "–";
+  document.getElementById("kpi-last").textContent = `Letzter Eintrag: ${lastText}`;
+
+  // Charts
+  // 1) Wartungen pro Gerät
+  const printerLabels = Object.keys(byPrinter);
+  const printerData = printerLabels.map(k => byPrinter[k]);
+
+  const pctx = document.getElementById("printerChart").getContext("2d");
+  safeDestroy(printerChartObj);
+  printerChartObj = new Chart(pctx, {
+    type: "bar",
+    data: { labels: printerLabels, datasets: [{ label: "Wartungen", data: printerData }] },
+    options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }
+  });
+
+  // 2) Wartungen nach Art
+  const actionLabels = Object.keys(byAction);
+  const actionData = actionLabels.map(k => byAction[k]);
+
+  const actx = document.getElementById("actionChart").getContext("2d");
+  safeDestroy(actionChartObj);
+  actionChartObj = new Chart(actx, {
+    type: "bar",
+    data: { labels: actionLabels, datasets: [{ label: "Anzahl", data: actionData }] },
+    options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }
+  });
+
+  // 3) Wartungen pro Monat (sortiert)
+  const monthLabels = Object.keys(byMonth).sort();
+  const monthData = monthLabels.map(k => byMonth[k]);
+
+  const mctx = document.getElementById("monthlyChart").getContext("2d");
+  safeDestroy(monthlyChartObj);
+  monthlyChartObj = new Chart(mctx, {
+    type: "line",
+    data: { labels: monthLabels, datasets: [{ label: "Wartungen/Monat", data: monthData, tension: 0.2 }] },
+    options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } } }
+  });
+
+  renderWearMatrix(entries);
+}
+
+function renderWearMatrix(entries){
+  const table = document.getElementById("wearMatrix");
+  if (!table) return;
+
+  const actions = ["Farbwechsel", "Wiper gewechselt", "Druckkopf gewechselt"];
+  const printersSet = new Set(entries.map(e => (e.drucker || "Unbekannt").trim()));
+  const printers = Array.from(printersSet).sort((a,b)=>a.localeCompare(b, "de"));
+
+  // Build counts
+  const counts = {}; // counts[printer][action] = n
+  for (const p of printers) counts[p] = {};
+  for (const e of entries){
+    const p = (e.drucker || "Unbekannt").trim();
+    const a = (e.aktion || "Unbekannt").trim();
+    if (!counts[p]) counts[p] = {};
+    counts[p][a] = (counts[p][a] || 0) + 1;
+  }
+
+  // Header
+  let html = "<thead><tr><th>Drucker</th>";
+  for (const a of actions) html += `<th>${a}</th>`;
+  html += "<th>Summe</th></tr></thead><tbody>";
+
+  // Rows
+  const colTotals = Object.fromEntries(actions.map(a=>[a,0]));
+  let grandTotal = 0;
+
+  for (const p of printers){
+    let rowSum = 0;
+    html += `<tr><td class="left">${p}</td>`;
+    for (const a of actions){
+      const v = counts[p][a] || 0;
+      rowSum += v;
+      colTotals[a] += v;
+      html += `<td>${v}</td>`;
+    }
+    grandTotal += rowSum;
+    html += `<td><b>${rowSum}</b></td></tr>`;
+  }
+
+  // Totals row
+  html += `<tr><td class="left"><b>Summe</b></td>`;
+  for (const a of actions){
+    html += `<td><b>${colTotals[a]}</b></td>`;
+  }
+  html += `<td><b>${grandTotal}</b></td></tr>`;
+  html += "</tbody>";
+
+  table.innerHTML = html;
+}
+
+
 
 // Chart
 let chart;
