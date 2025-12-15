@@ -1,35 +1,67 @@
-
 <!DOCTYPE html>
 <html lang="de">
 <head>
   <meta charset="UTF-8" />
-  <title>T2-C Wartungsprotokoll – PRO</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>T2-C Wartungsprotokoll – PRO (M365 Shared)</title>
+
+  <!-- PDF + Charts -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <!-- Microsoft Auth Library (MSAL) for SPA -->
+  <script src="https://cdn.jsdelivr.net/npm/@azure/msal-browser@3/dist/msal-browser.min.js"></script>
+
   <style>
-    body { font-family: Arial, sans-serif; margin: 40px; background-color: #f8f9fa; }
-    h1 { color: #333; }
+    body { font-family: Arial, sans-serif; margin: 30px; background-color: #f8f9fa; }
+    h1 { color: #333; margin-bottom: 10px; }
     label { font-weight: bold; display: block; margin-top: 15px; }
     select, input[type="text"], button, textarea { width: 100%; padding: 10px; margin-top: 5px; font-size: 16px; }
     .row { display: flex; gap: 20px; flex-wrap: wrap; }
     .half { flex: 1; min-width: 220px; }
-    .log-table { width: 100%; border-collapse: collapse; margin-top: 30px; }
+    .log-table { width: 100%; border-collapse: collapse; margin-top: 20px; background: #fff; }
     .log-table th, .log-table td { border: 1px solid #ccc; padding: 8px; text-align: center; }
     .log-table th { background-color: #eaeaea; }
-    .btn { background-color: #4CAF50; color: white; border: none; cursor: pointer; margin-top: 20px; }
+    .btn { background-color: #4CAF50; color: white; border: none; cursor: pointer; margin-top: 12px; }
     .btn:hover { background-color: #45a049; }
-    .dashboard, .chart-box { margin-top: 30px; padding: 15px; background-color: #eef; border-radius: 5px; }
+    .btn.secondary { background-color: #0d6efd; }
+    .btn.secondary:hover { background-color: #0b5ed7; }
+    .btn.danger { background-color: #dc3545; }
+    .btn.danger:hover { background-color: #bb2d3b; }
+    .dashboard, .chart-box, .auth-box { margin-top: 18px; padding: 14px; background-color: #eef; border-radius: 8px; }
     .dashboard div { margin: 5px 0; font-weight: bold; }
-    .search-box { margin-top: 20px; }
+    .search-box { margin-top: 14px; }
+    .muted { color:#555; font-size: 13px; }
+    .status { margin-top: 8px; padding: 10px; border-radius: 8px; background: #fff; border: 1px solid #ddd; }
+    .status.ok { border-color: #198754; }
+    .status.warn { border-color: #ffc107; }
+    .status.err { border-color: #dc3545; }
+    .top-actions { display:flex; gap:10px; flex-wrap: wrap; }
   </style>
 </head>
 <body>
 
-<h1>🧾 T2-C Wartungsprotokoll – PRO Version</h1>
+<h1>🧾 T2-C Wartungsprotokoll – PRO (gemeinsame Daten via M365)</h1>
+<div class="muted">
+  Diese Version speichert & lädt alle Einträge gemeinsam aus einem JSON-Log in eurem freigegebenen OneDrive/SharePoint-Ordner.
+</div>
+
+<div class="auth-box">
+  <div class="top-actions">
+    <button class="btn secondary" onclick="signIn()">🔐 Anmelden</button>
+    <button class="btn danger" onclick="signOut()">🚪 Abmelden</button>
+    <button class="btn" onclick="loadFromCloud()">⟳ Aus Cloud laden</button>
+  </div>
+  <div id="authStatus" class="status warn">Nicht angemeldet.</div>
+  <div class="muted">
+    Speicherort: <span id="cloudLocation">(wird nach Anmeldung aufgelöst)</span><br/>
+    Datei: <b>t2c-wartung-log.json</b>
+  </div>
+</div>
 
 <div class="dashboard">
-  <div><strong>📊 Live-Zähler:</strong></div>
+  <div><strong>📊 Live-Zähler (aus allen Einträgen):</strong></div>
   <div id="counter-gelb">Gelb gewechselt: 0×</div>
   <div id="counter-gruen">Grün gewechselt: 0×</div>
   <div id="counter-lila">Lila gewechselt: 0×</div>
@@ -87,8 +119,10 @@
 <label for="bemerkung">Bemerkung:</label>
 <textarea id="bemerkung" rows="3" placeholder="Zusätzliche Hinweise oder Fehlerbeschreibung..."></textarea>
 
-<button class="btn" onclick="eintragHinzufuegen()">➕ Eintrag speichern</button>
-<button class="btn" onclick="alsPDFExportieren()">📄 Exportieren als PDF</button>
+<div class="top-actions">
+  <button class="btn" onclick="saveEntry()">➕ Eintrag speichern (Cloud)</button>
+  <button class="btn secondary" onclick="alsPDFExportieren()">📄 Exportieren als PDF</button>
+</div>
 
 <div class="search-box">
   <label for="suchfeld">🔍 Suchen (z. B. nach Drucker oder Farbe):</label>
@@ -119,9 +153,295 @@
 </div>
 
 <script>
-let zaehler = { "Gelb": 0, "Grün": 0, "Lila": 0, "Schwarz": 0 };
+// =============================
+// 0) APP SETTINGS (Azure + Ordner)
+// =============================
+const APP_SETTINGS = {
+  clientId: "a797d95e-04be-4549-a8c6-d137da4b10ab",
+  tenantId: "f54f53bb-d0ff-4b78-bcf4-4aeeeb924428",
+  redirectUri: "https://thiemann423.github.io/t2c-wartung",
+  // Ordner-Link (Sharing-Link) – wird über /shares/{shareId}/driveItem aufgelöst:
+  folderShareUrl: "https://petrifeinkost-my.sharepoint.com/my?id=%2Fpersonal%2Fmerten%5Fthiemann%5Fpetri%2Dfeinkost%5Fde%2FDocuments%2FT2CD%5FDrucker&viewid=01466968%2D95c1%2D4d89%2D8bc7%2D8fb257b34162",
+  // Name der Logdatei im Ordner:
+  logFileName: "t2c-wartung-log.json",
+  // Minimale Scopes (Delegated) für Graph:
+  scopes: ["User.Read", "Files.ReadWrite.All"]
+};
 
-function eintragHinzufuegen() {
+// =============================
+// 1) MSAL AUTH
+// =============================
+const msalConfig = {
+  auth: {
+    clientId: APP_SETTINGS.clientId,
+    authority: `https://login.microsoftonline.com/${APP_SETTINGS.tenantId}`,
+    redirectUri: APP_SETTINGS.redirectUri
+  },
+  cache: {
+    cacheLocation: "localStorage",
+    storeAuthStateInCookie: false
+  }
+};
+
+const msalInstance = new msal.PublicClientApplication(msalConfig);
+
+let activeAccount = null;
+
+function setStatus(kind, text) {
+  const el = document.getElementById("authStatus");
+  el.classList.remove("ok", "warn", "err");
+  el.classList.add(kind);
+  el.textContent = text;
+}
+
+async function signIn() {
+  try {
+    const result = await msalInstance.loginPopup({ scopes: APP_SETTINGS.scopes });
+    activeAccount = result.account;
+    msalInstance.setActiveAccount(activeAccount);
+    setStatus("ok", `Angemeldet als: ${activeAccount.username}`);
+    await ensureCloudReady();
+    await loadFromCloud();
+  } catch (e) {
+    console.error(e);
+    setStatus("err", "Anmeldung fehlgeschlagen. Details in der Konsole.");
+  }
+}
+
+async function signOut() {
+  try {
+    const account = msalInstance.getActiveAccount();
+    if (!account) {
+      setStatus("warn", "Nicht angemeldet.");
+      return;
+    }
+    await msalInstance.logoutPopup({ account });
+    activeAccount = null;
+    setStatus("warn", "Abgemeldet.");
+    document.getElementById("cloudLocation").textContent = "(wird nach Anmeldung aufgelöst)";
+  } catch (e) {
+    console.error(e);
+    setStatus("err", "Abmeldung fehlgeschlagen. Details in der Konsole.");
+  }
+}
+
+async function getAccessToken() {
+  const account = msalInstance.getActiveAccount() || activeAccount;
+  if (!account) throw new Error("Not signed in");
+  const result = await msalInstance.acquireTokenSilent({ account, scopes: APP_SETTINGS.scopes });
+  return result.accessToken;
+}
+
+// =============================
+// 2) GRAPH HELPERS
+// =============================
+function toBase64Url(str) {
+  // btoa works for ASCII; ensure URI encoded.
+  return btoa(unescape(encodeURIComponent(str)))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function createShareIdFromUrl(url) {
+  // Graph shareId format: u!<base64url(shareUrl)>
+  return "u!" + toBase64Url(url);
+}
+
+async function graphFetch(url, options = {}) {
+  const token = await getAccessToken();
+  const headers = options.headers || {};
+  headers["Authorization"] = `Bearer ${token}`;
+  headers["Content-Type"] = headers["Content-Type"] || "application/json";
+  const resp = await fetch(url, { ...options, headers });
+  if (!resp.ok) {
+    const txt = await resp.text();
+    throw new Error(`Graph error ${resp.status}: ${txt}`);
+  }
+  // Some endpoints return no content
+  if (resp.status === 204) return null;
+  const ct = resp.headers.get("content-type") || "";
+  if (ct.includes("application/json")) return await resp.json();
+  return await resp.text();
+}
+
+// =============================
+// 3) CLOUD STORAGE: Resolve folder + read/write JSON log
+// =============================
+let cloud = {
+  driveId: null,
+  folderId: null,
+  folderName: null,
+  fileItemId: null
+};
+
+async function resolveFolderFromShareUrl() {
+  const shareId = createShareIdFromUrl(APP_SETTINGS.folderShareUrl);
+  const driveItem = await graphFetch(`https://graph.microsoft.com/v1.0/shares/${shareId}/driveItem`);
+  // driveItem is the item behind the sharing link (folder or file)
+  const driveId = driveItem.parentReference?.driveId || driveItem.remoteItem?.parentReference?.driveId;
+  const folderId = driveItem.id || driveItem.remoteItem?.id;
+  const name = driveItem.name || driveItem.remoteItem?.name || "Ordner";
+  if (!driveId || !folderId) throw new Error("Konnte driveId/folderId nicht auflösen.");
+  cloud.driveId = driveId;
+  cloud.folderId = folderId;
+  cloud.folderName = name;
+  document.getElementById("cloudLocation").textContent = `${name} (drive: ${driveId})`;
+}
+
+async function findOrCreateLogFile() {
+  // Try to find existing file in folder
+  const children = await graphFetch(`https://graph.microsoft.com/v1.0/drives/${cloud.driveId}/items/${cloud.folderId}/children?$select=id,name`);
+  const existing = (children.value || []).find(x => x.name === APP_SETTINGS.logFileName);
+  if (existing) {
+    cloud.fileItemId = existing.id;
+    return;
+  }
+  // Create empty JSON file
+  const initial = {
+    version: 1,
+    createdAt: new Date().toISOString(),
+    entries: []
+  };
+  const url = `https://graph.microsoft.com/v1.0/drives/${cloud.driveId}/items/${cloud.folderId}:/${encodeURIComponent(APP_SETTINGS.logFileName)}:/content`;
+  const token = await getAccessToken();
+  const resp = await fetch(url, {
+    method: "PUT",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(initial, null, 2)
+  });
+  if (!resp.ok) {
+    const txt = await resp.text();
+    throw new Error(`Konnte Logdatei nicht erstellen (${resp.status}): ${txt}`);
+  }
+  const created = await resp.json();
+  cloud.fileItemId = created.id;
+}
+
+async function readLog() {
+  if (!cloud.fileItemId) await findOrCreateLogFile();
+  const url = `https://graph.microsoft.com/v1.0/drives/${cloud.driveId}/items/${cloud.fileItemId}/content`;
+  const token = await getAccessToken();
+  const resp = await fetch(url, {
+    headers: { "Authorization": `Bearer ${token}` }
+  });
+  if (!resp.ok) {
+    const txt = await resp.text();
+    throw new Error(`Konnte Log nicht lesen (${resp.status}): ${txt}`);
+  }
+  const text = await resp.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    // If file exists but is empty/corrupt
+    return { version: 1, createdAt: new Date().toISOString(), entries: [] };
+  }
+}
+
+async function writeLog(logObj) {
+  if (!cloud.fileItemId) await findOrCreateLogFile();
+  const url = `https://graph.microsoft.com/v1.0/drives/${cloud.driveId}/items/${cloud.fileItemId}/content`;
+  const token = await getAccessToken();
+  const resp = await fetch(url, {
+    method: "PUT",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(logObj, null, 2)
+  });
+  if (!resp.ok) {
+    const txt = await resp.text();
+    throw new Error(`Konnte Log nicht schreiben (${resp.status}): ${txt}`);
+  }
+  return await resp.json(); // returns driveItem
+}
+
+async function ensureCloudReady() {
+  const account = msalInstance.getActiveAccount();
+  if (!account) {
+    setStatus("warn", "Nicht angemeldet.");
+    throw new Error("Not signed in");
+  }
+  if (!cloud.driveId || !cloud.folderId) {
+    await resolveFolderFromShareUrl();
+  }
+  if (!cloud.fileItemId) {
+    await findOrCreateLogFile();
+  }
+}
+
+// =============================
+// 4) UI + DATA MODEL
+// =============================
+let zaehler = { "Gelb": 0, "Grün": 0, "Lila": 0, "Schwarz": 0 };
+let allEntries = []; // authoritative list from cloud
+
+function resetTable() {
+  const tbody = document.querySelector("#wartungsliste tbody");
+  tbody.innerHTML = "";
+}
+
+function recomputeCounters(entries) {
+  zaehler = { "Gelb": 0, "Grün": 0, "Lila": 0, "Schwarz": 0 };
+  for (const e of entries) {
+    const farben = (e.farben || "").split(",").map(s => s.trim()).filter(Boolean);
+    for (const f of farben) if (zaehler[f] !== undefined) zaehler[f] += 1;
+  }
+  updateDashboard();
+  updateChart();
+}
+
+function renderEntries(entries) {
+  resetTable();
+  const tbody = document.querySelector("#wartungsliste tbody");
+  for (const e of entries) {
+    const tr = document.createElement("tr");
+    const cells = [
+      e.datum || "",
+      e.zeit || "",
+      e.drucker || "",
+      e.aktion || "",
+      e.seriennummer || "",
+      e.farben || "",
+      e.leistung || "",
+      e.fehler || "",
+      e.personal || "",
+      e.bemerkung || ""
+    ];
+    cells.forEach(text => {
+      const td = document.createElement("td");
+      td.textContent = text;
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  }
+}
+
+function updateDashboard() {
+  document.getElementById("counter-gelb").textContent = `Gelb gewechselt: ${zaehler["Gelb"]}×`;
+  document.getElementById("counter-gruen").textContent = `Grün gewechselt: ${zaehler["Grün"]}×`;
+  document.getElementById("counter-lila").textContent = `Lila gewechselt: ${zaehler["Lila"]}×`;
+  document.getElementById("counter-schwarz").textContent = `Schwarz gewechselt: ${zaehler["Schwarz"]}×`;
+}
+
+async function loadFromCloud() {
+  try {
+    await ensureCloudReady();
+    setStatus("ok", `Angemeldet als: ${(msalInstance.getActiveAccount()||{}).username} – lade Daten...`);
+    const log = await readLog();
+    allEntries = Array.isArray(log.entries) ? log.entries : [];
+    renderEntries(allEntries);
+    recomputeCounters(allEntries);
+    setStatus("ok", `Daten geladen: ${allEntries.length} Einträge.`);
+  } catch (e) {
+    console.error(e);
+    setStatus("err", "Laden fehlgeschlagen (siehe Konsole).");
+  }
+}
+
+function collectEntryFromForm() {
   const jetzt = new Date();
   const datum = jetzt.toLocaleDateString();
   const zeit = jetzt.toLocaleTimeString();
@@ -135,51 +455,57 @@ function eintragHinzufuegen() {
   const farbenListe = [...document.querySelectorAll(".farbe:checked")].map(cb => cb.value);
   const farben = farbenListe.join(", ");
 
-  farbenListe.forEach(farbe => { if (zaehler[farbe] !== undefined) zaehler[farbe]++; });
-  updateDashboard();
+  return {
+    datum, zeit, drucker, aktion, seriennummer, farben, leistung, fehler, personal, bemerkung,
+    // machine fields:
+    createdAt: new Date().toISOString()
+  };
+}
 
-  const table = document.getElementById("wartungsliste").getElementsByTagName("tbody")[0];
-  const newRow = table.insertRow();
-  [datum, zeit, drucker, aktion, seriennummer, farben, leistung, fehler, personal, bemerkung].forEach((text, idx) => {
-    const cell = newRow.insertCell(idx);
-    cell.textContent = text;
-  });
-
-  // Reset
+function resetForm() {
   document.getElementById("seriennummer").value = "";
   document.getElementById("leistung").value = "";
   document.getElementById("bemerkung").value = "";
   document.querySelectorAll(".farbe").forEach(cb => cb.checked = false);
   document.getElementById("fehler").value = "";
-
-  updateChart();
 }
 
-function updateDashboard() {
-  document.getElementById("counter-gelb").textContent = `Gelb gewechselt: ${zaehler["Gelb"]}×`;
-  document.getElementById("counter-gruen").textContent = `Grün gewechselt: ${zaehler["Grün"]}×`;
-  document.getElementById("counter-lila").textContent = `Lila gewechselt: ${zaehler["Lila"]}×`;
-  document.getElementById("counter-schwarz").textContent = `Schwarz gewechselt: ${zaehler["Schwarz"]}×`;
+async function saveEntry() {
+  try {
+    await ensureCloudReady();
+
+    // Simple validation
+    const entry = collectEntryFromForm();
+    if (!entry.drucker || !entry.personal || !entry.aktion) {
+      alert("Bitte Drucker, Personal und Aktion auswählen.");
+      return;
+    }
+
+    setStatus("ok", "Speichere Eintrag in Cloud...");
+
+    // Read latest, append, write back (simple approach)
+    const log = await readLog();
+    const entries = Array.isArray(log.entries) ? log.entries : [];
+    entries.push(entry);
+    log.entries = entries;
+
+    await writeLog(log);
+
+    // Refresh UI
+    allEntries = entries;
+    renderEntries(allEntries);
+    recomputeCounters(allEntries);
+
+    resetForm();
+    setStatus("ok", `Gespeichert. Gesamt: ${allEntries.length} Einträge.`);
+  } catch (e) {
+    console.error(e);
+    setStatus("err", "Speichern fehlgeschlagen (siehe Konsole).");
+    alert("Speichern fehlgeschlagen. Bitte Konsole öffnen (F12) und Meldung prüfen.");
+  }
 }
 
-function alsPDFExportieren() {
-  const { jsPDF } = window.jspdf;
-  const doc = new jsPDF();
-  doc.text("T2-C Wartungsprotokoll", 14, 15);
-  const rows = [];
-  document.querySelectorAll("#wartungsliste tbody tr").forEach(row => {
-    const rowData = [];
-    row.querySelectorAll("td").forEach(cell => rowData.push(cell.textContent));
-    rows.push(rowData);
-  });
-  doc.autoTable({
-    head: [["Datum", "Uhrzeit", "Drucker", "Aktion", "Seriennummer", "Farben", "Leistung", "Fehler", "Personal", "Bemerkung"]],
-    body: rows,
-    startY: 25
-  });
-  doc.save("T2C_Wartung.pdf");
-}
-
+// Suche (clientseitig)
 function sucheInTabelle() {
   const input = document.getElementById("suchfeld").value.toLowerCase();
   const rows = document.querySelectorAll("#wartungsliste tbody tr");
@@ -189,7 +515,28 @@ function sucheInTabelle() {
   });
 }
 
-// Chart-Auswertung
+// PDF-Export
+function alsPDFExportieren() {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  doc.text("T2-C Wartungsprotokoll", 14, 15);
+
+  const rows = [];
+  document.querySelectorAll("#wartungsliste tbody tr").forEach(row => {
+    const rowData = [];
+    row.querySelectorAll("td").forEach(cell => rowData.push(cell.textContent));
+    rows.push(rowData);
+  });
+
+  doc.autoTable({
+    head: [["Datum", "Uhrzeit", "Drucker", "Aktion", "Seriennummer", "Farben", "Leistung", "Fehler", "Personal", "Bemerkung"]],
+    body: rows,
+    startY: 25
+  });
+  doc.save("T2C_Wartung.pdf");
+}
+
+// Chart
 let chart;
 function updateChart() {
   const ctx = document.getElementById("colorChart").getContext("2d");
@@ -211,7 +558,28 @@ function updateChart() {
     }
   });
 }
+
+// Auto-detect existing session
+(async function boot() {
+  try {
+    await msalInstance.initialize();
+    const accounts = msalInstance.getAllAccounts();
+    if (accounts.length > 0) {
+      activeAccount = accounts[0];
+      msalInstance.setActiveAccount(activeAccount);
+      setStatus("ok", `Angemeldet als: ${activeAccount.username}`);
+      await ensureCloudReady();
+      await loadFromCloud();
+    } else {
+      setStatus("warn", "Nicht angemeldet. Bitte oben auf „Anmelden“ klicken.");
+    }
+  } catch (e) {
+    console.error(e);
+    setStatus("err", "Initialisierung fehlgeschlagen (siehe Konsole).");
+  }
+})();
 </script>
+
 </body>
 </html>
 
